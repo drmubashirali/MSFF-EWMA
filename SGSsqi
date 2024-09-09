@@ -1,0 +1,60 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
+from scipy.stats import skew
+import os
+
+def load_signal(file_path):
+    return np.loadtxt(file_path)
+
+def apply_savgol_filter(signal, window_length=51, polyorder=3):
+    return savgol_filter(signal, window_length, polyorder)
+
+def calculate_skewness(signal, threshold=0.3):
+    signal_skewness = skew(signal)
+    return signal_skewness > threshold
+
+def process_and_plot_signals(folder_path, subject_files, skewness_threshold=0.5):
+    preprocessed_folder = os.path.join(folder_path, 'preprocessed_svg1')
+    os.makedirs(preprocessed_folder, exist_ok=True)  
+
+    for i, file_name in enumerate(subject_files):
+        file_path = os.path.join(folder_path, file_name)
+        raw_signal = load_signal(file_path)
+
+        filtered_signal = apply_savgol_filter(raw_signal)
+
+        if calculate_skewness(filtered_signal, skewness_threshold):
+          
+            preprocessed_file_path = os.path.join(preprocessed_folder, file_name)
+            np.savetxt(preprocessed_file_path, filtered_signal)
+
+        
+            plt.figure(figsize=(10, 4))  # Set size of the figure for each signal
+            # Plot raw signal
+            plt.subplot(1, 2, 1)  # First subplot for raw signal
+            plt.plot(raw_signal, label='Raw Signal', color='blue')
+            plt.title(f'Raw Signal: {file_name}')
+            plt.xlabel('Time (samples)')
+            plt.ylabel('Amplitude')
+            plt.legend()
+            plt.grid(True)
+
+        
+            plt.subplot(1, 2, 2)  # Second subplot for filtered signal
+            plt.plot(filtered_signal, label='Filtered Signal', color='red')
+            plt.title(f'Filtered Signal: {file_name}')
+            plt.xlabel('Time (samples)')
+            plt.ylabel('Amplitude')
+            plt.legend()
+            plt.grid(True)
+
+            plt.tight_layout()
+            plt.show()
+        else:
+            print(f"Signal {file_name} discarded due to low skewness.")
+
+folder_path = 'dataset'
+subject_files = [f'd{i}.txt' for i in range(1, 42)] + [f'h{i}.txt' for i in range(1, 50)]
+
+process_and_plot_signals(folder_path, subject_files)
