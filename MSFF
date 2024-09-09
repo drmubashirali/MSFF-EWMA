@@ -1,0 +1,304 @@
+import os
+import numpy as np
+import pandas as pd
+from scipy import stats
+from scipy.signal import find_peaks, welch
+from natsort import natsorted
+
+def calculate_statistical_features(signal):
+    return {
+        'Mean': np.mean(signal),
+        'StdDev': np.std(signal),
+        'Skewness': stats.skew(signal),
+        'Kurtosis': stats.kurtosis(signal),
+        'MaxAmplitude': np.max(signal),
+        'MinAmplitude': np.min(signal),
+        'Variance': np.var(signal),
+        'IQR': stats.iqr(signal)
+    }
+
+def signal_mobility(s):
+    d = np.diff(s, n=1)
+    S0 = np.sqrt(np.mean(s**2))
+    S1 = np.sqrt(np.mean(d**2))
+    return S1 / S0
+
+def signal_complexity(s):
+    d = np.diff(s, n=1)
+    g = np.diff(d, n=1)
+    S0 = np.sqrt(np.mean(s**2))
+    S1 = np.sqrt(np.mean(d**2))
+    S2 = np.sqrt(np.mean(g**2))
+    return np.sqrt(S2**2 / S1**2 - S1**2 / S0**2)
+
+def kolmogorov_entropy(s):
+    intervals = np.linspace(min(s), max(s), 11)
+    counts = np.histogram(s, bins=intervals)[0]
+    p = counts / np.sum(counts)
+    epsilon = 1e-10
+    p = p + epsilon
+    Hi = -p * np.log2(p)
+    return np.mean(np.diff(Hi))
+
+def shannon_entropy(s):
+    total_entropy = 0
+    for nbins in range(2, 201):
+        p, _ = np.histogram(s, bins=nbins)
+        p = p / np.sum(p)
+        p = p[p > 1e-10]
+        try:
+            entropy = -np.sum(p * np.log2(p))
+            total_entropy += entropy
+        except Exception as e:
+            print(f"Encountered an issue with nbins = {nbins}")
+            print("Probabilities: ", p)
+            print("Exception: ", e)
+    return total_entropy / 198
+
+def power_spectral_entropy(s, Fs=1000):
+    nperseg_val = min(len(s), 256)
+    pxx, _ = welch(s, fs=Fs, nperseg=nperseg_val)
+    pxx = pxx / np.sum(pxx)
+    entropy = -np.sum(pxx * np.log2(pxx))
+    return entropy
+
+def kaiser_teager_energy(s):
+    energy = np.zeros(len(s))
+    for i in range(1, len(s) - 1):
+        energy[i] = s[i]**2 - s[i-1] * s[i+1]
+    return np.sum(energy)
+
+def logarithmic_energy(s):
+    s_sq = np.square(s) + np.spacing(1)
+    return np.sum(np.where(s_sq > 0, np.log(s_sq), 0))
+
+def extract_features(signal, file_name):
+    features = {}
+    features['ID'] = file_name
+    ppg_features = calculate_statistical_features(signal)
+    features.update({f'PPG_{key}': value for key, value in ppg_features.items()})
+
+    features['PPG_SM'] = signal_mobility(signal)
+    features['PPG_SC'] = signal_complexity(signal)
+    features['PPG_KE'] = kolmogorov_entropy(signal)
+    features['PPG_SE'] = shannon_entropy(signal)
+    features['PPG_KTE'] = kaiser_teager_energy(signal)
+    features['PPG_LE'] = logarithmic_energy(signal)
+
+    first_derivative = np.gradient(signal)
+    first_derivative_features = calculate_statistical_features(first_derivative)
+    features.update({f'VPG_{key}': value for key, value in first_derivative_features.items()})
+
+    second_derivative = np.gradient(first_derivative)
+    second_derivative_features = calculate_statistical_features(second_derivative)
+    features.update({f'APG_{key}': value for key, value in second_derivative_features.items()})
+
+    peaks, _ = find_peaks(second_derivative)
+    if len(peaks) > 4:
+        ratios = second_derivative[peaks[:5]] / second_derivative[peaks[0]]
+        features['APG_b/a'] = ratios[1]
+        features['APG_c/a'] = ratios[2]
+        features['APG_d/a'] = ratios[3]
+        features['APG_e/a'] = ratios[4]
+        features['APG_AI'] = np.mean(second_derivative[peaks[:5]])
+        features['APG_AAI'] = np.mean(second_derivative[peaks[1:5]])
+
+    return features
+
+def read_and_process_signals(folder_path, subject_files, output_file):
+    all_features = []
+
+    for file_name in subject_files:
+        signal_path = os.path.join(folder_path, file_name)
+        signal = np.loadtxt(signal_path)
+
+        features = extract_features(signal, file_name)
+        features['Label'] = 1 if 'd' in file_name else 0  # Adjust this based on your labeling logic
+        all_features.append(features)
+
+    patient_data = pd.DataFrame(all_features)
+    patient_data.to_csv(output_file, index=False)
+    print(f"Features saved to {output_file}")
+
+folder_path = './dataset/preprocessed_svg1'
+
+folds = {
+    'fold1features': [f'd{i}.txt' for i in range(2, 7)] + ['d38.txt'] + [f'h{i}.txt' for i in [1, 2, 4, 6, 7]] + ['h44.txt'],
+    'fold2features': [f'd{i}.txt' for i in range(7, 12)] + ['d39.txt'] + [f'h{i}.txt' for i in [8, 9, 11, 12, 13]] + ['h45.txt'],
+    'fold3features': [f'd{i}.txt' for i in range(12, 17)] + ['d40.txt'] + [f'h{i}.txt' for i in [14, 15, 17, 18, 19]] + ['h46.txt'],
+    'fold4features': [f'd{i}.txt' for i in range(17, 22)] + ['d41.txt'] + [f'h{i}.txt' for i in range(20, 24)] + ['h35.txt', 'h47.txt'],
+    'fold5features': [f'd{i}.txt' for i in [22, 23, 24, 28, 30, 31]] + [f'h{i}.txt' for i in [29, 30, 32, 33, 34]] + ['h48.txt'],
+    'fold6features': [f'd{i}.txt' for i in range(33, 38)] + [f'h{i}.txt' for i in range(38, 44)] + ['h49.txt']
+}
+
+# Process the signals and save features for each fold
+for fold_name, subject_files in folds.items():
+    output_file = f'./dataset/preprocessed_svg1/{fold_name}.csv'
+    read_and_process_signals(folder_path, subject_files, output_file)
+
+
+from natsort import natsorted
+from scipy.stats import skew, kurtosis
+from torch.nn import Module, Conv1d, BatchNorm1d, ReLU, AdaptiveAvgPool1d, Linear, Sequential
+
+class BasicBlock1D(Module):
+    expansion = 1
+
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super(BasicBlock1D, self).__init__()
+        self.conv1 = Conv1d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = BatchNorm1d(out_channels)
+        self.relu = ReLU(inplace=True)
+        self.conv2 = Conv1d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = BatchNorm1d(out_channels)
+        self.downsample = downsample
+
+    def forward(self, x):
+        identity = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+        return out
+
+class OneDCNN(Module):
+    def __init__(self, block, layers, num_classes=1000):
+        super(OneDCNN, self).__init__()
+        self.in_channels = 64
+        self.conv1 = Conv1d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = BatchNorm1d(64)
+        self.relu = ReLU(inplace=True)
+        self.maxpool = Sequential()  
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        self.avgpool = AdaptiveAvgPool1d(1)
+        self.fc = Linear(512 * block.expansion, num_classes)
+
+    def _make_layer(self, block, out_channels, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.in_channels != out_channels * block.expansion:
+            downsample = Sequential(
+                Conv1d(self.in_channels, out_channels * block.expansion, kernel_size=1, stride=stride, bias=False),
+                BatchNorm1d(out_channels * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.in_channels, out_channels, stride, downsample))
+        self.in_channels = out_channels * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.in_channels, out_channels))
+
+        return Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+def cnn_1d(**kwargs):
+    return OneDCNN(BasicBlock1D, [2, 2, 2, 2], **kwargs)
+
+def compute_statistics(data):
+    mean = data.mean()
+    std = data.std()
+    var = data.var()
+    skewness = skew(data)
+    kurt = kurtosis(data)
+    iqr = np.subtract(*np.percentile(data, [75, 25]))
+    max_val = data.max()
+    min_val = data.min()
+    return mean, std, var, skewness, kurt, iqr, max_val, min_val
+
+def read_and_process_signals(folder_path, subject_files, output_file):
+    all_features = []
+    resnet_features_list = []
+    stat_features_list = []
+    ids = []
+
+    diabetes_model = cnn_1d(num_classes=1000)  
+
+    for file_name in subject_files:
+        signal_path = os.path.join(folder_path, file_name)
+        signal = np.loadtxt(signal_path)
+        target_length = 2100
+        signal = signal[:target_length] if len(signal) >= target_length else np.pad(signal, (0, target_length - len(signal)), 'constant')
+
+        signal = signal.reshape(1, 1, -1)  
+        signal_tensor = torch.from_numpy(signal).float()
+
+        with torch.no_grad():
+            resnet_features = diabetes_model(signal_tensor).numpy().flatten()
+
+        resnet_features_list.append(resnet_features)
+        stat_features_list.append(compute_statistics(resnet_features))
+        ids.append(file_name.split('.')[0])
+
+    resnet_df = pd.DataFrame(resnet_features_list)
+    resnet_df.insert(0, 'ID', ids)
+    resnet_df.to_csv(output_file.replace('.csv', '_resnet_features.csv'), index=False)
+
+    stat_df = pd.DataFrame(stat_features_list, columns=['DF_ME', 'DF_SD', 'DF_VA', 'DF_SK', 'DF_KU', 'DF_IQR', 'DF_MXA', 'DF_MIA'])
+    stat_df.insert(0, 'ID', ids)
+    stat_df.to_csv(output_file.replace('.csv', '_deep_features.csv'), index=False)
+
+    print(f"ResNet features saved to {output_file.replace('.csv', '_resnet_features.csv')}")
+    print(f"Statistical features saved to {output_file.replace('.csv', 'deep.csv')}")
+
+
+folder_path = './dataset/preprocessed_svg1'
+
+folds = {
+    'fold1features': [f'd{i}.txt' for i in range(2, 7)] + ['d38.txt'] + [f'h{i}.txt' for i in [1, 2, 4, 6, 7]] + ['h44.txt'],
+    'fold2features': [f'd{i}.txt' for i in range(7, 12)] + ['d39.txt'] + [f'h{i}.txt' for i in [8, 9, 11, 12, 13]] + ['h45.txt'],
+    'fold3features': [f'd{i}.txt' for i in range(12, 17)] + ['d40.txt'] + [f'h{i}.txt' for i in [14, 15, 17, 18, 19]] + ['h46.txt'],
+    'fold4features': [f'd{i}.txt' for i in range(17, 22)] + ['d41.txt'] + [f'h{i}.txt' for i in range(20, 24)] + ['h35.txt', 'h47.txt'],
+    'fold5features': [f'd{i}.txt' for i in [22, 23, 24, 28, 30, 31]] + [f'h{i}.txt' for i in [29, 30, 32, 33, 34]] + ['h48.txt'],
+    'fold6features': [f'd{i}.txt' for i in range(33, 38)] + [f'h{i}.txt' for i in range(38, 44)] + ['h49.txt']
+}
+
+for fold_name, subject_files in folds.items():
+    output_file = f'./dataset/preprocessed_svg1/{fold_name}.csv'
+    read_and_process_signals(folder_path, subject_files, output_file)
+
+
+def merge_and_shuffle_files(rfe_file, deep_file, final_file):
+    rfe_df = pd.read_csv(rfe_file)
+    deep_df = pd.read_csv(deep_file)
+    
+    rfe_df['ID'] = rfe_df['ID'].str.replace('.txt', '')
+    merged_df = pd.merge(rfe_df, deep_df, on='ID')
+    
+    cols_to_shuffle = merged_df.columns.difference(['ID', 'Label'])
+    shuffled_cols = np.random.permutation(cols_to_shuffle)
+    final_columns = ['ID'] + shuffled_cols.tolist() + ['Label']
+    merged_df = merged_df[final_columns]
+    merged_df.to_csv(final_file, index=False)
+    print(f"Final merged and shuffled file saved to {final_file}")
+
+folds = ['fold1', 'fold2', 'fold3', 'fold4', 'fold5', 'fold6']
+
+for fold in folds:
+    rfe_file = f'./dataset/preprocessed_svg1/{fold}rfe.csv'
+    deep_file = f'./dataset/preprocessed_svg1/{fold}features_deep_features.csv'
+    final_file = f'./dataset/preprocessed_svg1/{fold}final.csv'
+    merge_and_shuffle_files(rfe_file, deep_file, final_file)
